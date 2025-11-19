@@ -21,6 +21,7 @@ from utils.torch_utils import select_device, load_classifier, time_synchronized,
 
 # --- (EAR関連のヘルパー関数は削除) ---
 
+print("start")
 
 def detect(save_img=False):
     source, weights, view_img, save_txt, imgsz, trace = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size, not opt.no_trace
