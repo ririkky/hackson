@@ -1,3 +1,11 @@
+def calc_ear(landmarks, indices):
+    # EAR (Eye Aspect Ratio) を計算
+    p = [landmarks[i] for i in indices]
+    vert1 = np.linalg.norm(np.array([p[1].x, p[1].y]) - np.array([p[5].x, p[5].y]))
+    vert2 = np.linalg.norm(np.array([p[2].x, p[2].y]) - np.array([p[4].x, p[4].y]))
+    horiz = np.linalg.norm(np.array([p[0].x, p[0].y]) - np.array([p[3].x, p[3].y]))
+    ear = (vert1 + vert2) / (2.0 * horiz)
+    return ear
 import argparse
 import time
 from pathlib import Path
@@ -33,16 +41,13 @@ def detect(save_img=False):
     save_dir = Path(increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok))  # increment run
     (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
     
-    # --- ★修正: 顔画像保存用のディレクトリ (Pathオブジェクトにし、mkdirを追加) ---
-    face_output_dir = Path("/Users/hayatanobuya/1/授業/ハッカソン/detect_yolo/output/images")
-    face_output_dir.mkdir(parents=True, exist_ok=True) # ディレクトリが存在しない場合に作成
-    # -----------------------------------------------------------------
-
-    # --- ★追加: CSV保存用のディレクトリとファイルパス ---
-    csv_output_dir = Path("/Users/hayatanobuya/1/授業/ハッカソン/detect_yolo/output/file")
-    csv_output_dir.mkdir(parents=True, exist_ok=True) # ディレクトリを作成
+    # 顔画像保存用ディレクトリ（相対パス）
+    face_output_dir = Path("images/faces")
+    face_output_dir.mkdir(parents=True, exist_ok=True)
+    # CSV保存用ディレクトリ・ファイル（相対パス）
+    csv_output_dir = Path("images")
+    csv_output_dir.mkdir(parents=True, exist_ok=True)
     csv_file_path = csv_output_dir / "results.csv"
-    # -----------------------------------------------
 
     # Initialize
     set_logging()
@@ -119,7 +124,7 @@ def detect(save_img=False):
     # --- solvePnP用 3Dモデル座標 ---
 
     # --- ★追加: CSVファイルを初期化 (ヘッダー書き込み) ---
-    csv_header = ["メッシュID", "パス", "評価"]
+    csv_header = ["メッシュID", "パス", "総合スコア", "Pitchスコア", "Yawスコア", "EARスコア"]
     # 'w' (write)モードでファイルを開き、ヘッダーを書き込む
     # 実行のたびに上書きされます
     try:
@@ -258,79 +263,105 @@ def detect(save_img=False):
                                         # ★修正: FACE_COUNTERS への格納処理を削除 (不要)
 
                                         all_landmarks = face_landmarks.landmark
-                                        
-                                        
-                                        # --- 顔の傾き推定 (solvePnP) ---
+
+                                        # === 授業態度スコア計算 ===
                                         try:
-                                            # 1. カメラ行列の準備 (簡易版)
-                                            focal_length = roi_shape[1] # width
-                                            center = (roi_shape[1] / 2, roi_shape[0] / 2) # (width/2, height/2)
+                                            # 1. 顔の向き（縦・横）推定（solvePnP）
+                                            focal_length = roi_shape[1]
+                                            center = (roi_shape[1] / 2, roi_shape[0] / 2)
                                             camera_matrix = np.array(
                                                 [[focal_length, 0, center[0]],
                                                  [0, focal_length, center[1]],
-                                                 [0, 0, 1]], dtype="double"
-                                            )
-                                            dist_coeffs = np.zeros((4, 1)) # 歪みなしと仮定
-
-                                            # 2. 2D画像座標の取得 (ROI座標系)
+                                                 [0, 0, 1]], dtype="double")
+                                            dist_coeffs = np.zeros((4, 1))
                                             image_points = []
                                             for idx in POSE_INDICES:
                                                 lm = all_landmarks[idx]
-                                                cx = int(lm.x * roi_shape[1]) # roi width
-                                                cy = int(lm.y * roi_shape[0]) # roi height
+                                                cx = int(lm.x * roi_shape[1])
+                                                cy = int(lm.y * roi_shape[0])
                                                 image_points.append((cx, cy))
                                             image_points = np.array(image_points, dtype="double")
-                                            
-                                            # 3. solvePnP 実行
                                             (success, rotation_vector, translation_vector) = cv2.solvePnP(
-                                                model_points, image_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE
-                                            )
-
-                                            # 4. 回転ベクトルをオイラー角 (Pitch, Yaw, Roll) に変換
+                                                model_points, image_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE)
                                             rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
-                                            sy = np.sqrt(rotation_matrix[0, 0] * rotation_matrix[0, 0] + rotation_matrix[1, 0] * rotation_matrix[1, 0])
-                                            
+                                            sy = np.sqrt(rotation_matrix[0, 0] ** 2 + rotation_matrix[1, 0] ** 2)
                                             singular = sy < 1e-6
-                                            
                                             if not singular:
                                                 pitch = np.degrees(np.arctan2(-rotation_matrix[2, 0], sy))
                                                 yaw = np.degrees(np.arctan2(rotation_matrix[1, 0], rotation_matrix[0, 0]))
-                                                roll = np.degrees(np.arctan2(rotation_matrix[2, 1], rotation_matrix[2, 2]))
                                             else:
                                                 pitch = np.degrees(np.arctan2(-rotation_matrix[2, 0], sy))
                                                 yaw = 0
-                                                roll = np.degrees(np.arctan2(-rotation_matrix[1, 2], rotation_matrix[1, 1]))
 
-                                            # 5. 状態判定 (Pitch: 前後の傾き)
-                                            # pitch > 0 がうなずき (前傾)
-                                            
-                                            # --- ★修正: 評価ロジックを "good" / "bad" に変更 ---
-                                            if pitch > HEAD_PITCH_THRESH:
-                                                status = "bad" # ★ここで status 更新
-                                                color = (0, 255, 0) # 緑
+                                            # 2. 目の開き具合（EAR）
+                                            LEFT_EYE_INDICES = [33, 160, 158, 133, 153, 144]
+                                            RIGHT_EYE_INDICES = [362, 385, 387, 263, 373, 380]
+                                            left_ear = calc_ear(all_landmarks, LEFT_EYE_INDICES)
+                                            right_ear = calc_ear(all_landmarks, RIGHT_EYE_INDICES)
+                                            ear = (left_ear + right_ear) / 2.0
+
+                                            # 3. 目線方向（左右目の中心x座標で判定）
+                                            left_eye_center_x = all_landmarks[33].x
+                                            right_eye_center_x = all_landmarks[263].x
+                                            eye_center_x = (left_eye_center_x + right_eye_center_x) / 2
+
+
+                                            # --- スコア計算（各25点満点、合計50点）---
+                                            # 顔の向き（縦:Pitch）: 45度超で0点、20度以内で満点、間は線形減点
+                                            if abs(pitch) <= 20:
+                                                pitch_score = 1.0
+                                            elif abs(pitch) >= 45:
+                                                pitch_score = 0.0
                                             else:
-                                                status = "good" # ★ここで status 更新
+                                                pitch_score = (45 - abs(pitch)) / 25.0
+
+                                            # 顔の向き（横:Yaw）: 45度超で0点、20度以内で満点、間は線形減点
+                                            if abs(yaw) <= 20:
+                                                yaw_score = 1.0
+                                            elif abs(yaw) >= 45:
+                                                yaw_score = 0.0
+                                            else:
+                                                yaw_score = (45 - abs(yaw)) / 25.0
+
+                                            # 目の開き具合: EAR>=0.25で満点、0.15未満で0点、間は線形減点
+                                            if ear >= 0.25:
+                                                ear_score = 1.0
+                                            elif ear < 0.15:
+                                                ear_score = 0.0
+                                            else:
+                                                ear_score = (ear - 0.15) / 0.10
+
+                                            # 合計スコア（50点満点）
+                                            total_score = int(round(
+                                                max(0, min(25 * pitch_score, 25)) +
+                                                max(0, min(25 * yaw_score, 25)) +
+                                                max(0, min(25 * ear_score, 25))
+                                            ))
+
+
+                                            # スコアに応じてstatusを変更（good:40点以上, normal:30点以上, bad:それ未満）
+                                            if total_score >= 40:
+                                                status = f"good ({total_score})"
                                                 color = (0, 0, 255) # 赤
-                                            
-                                            # ★追加: 評価をコンソールに出力
-                                            print(f"  Face ID {face_id} Pitch: {pitch:.1f} deg -> Status: {status}")
-                                            # ---------------------------------------------------
+                                            elif total_score >= 30:
+                                                status = f"normal ({total_score})"
+                                                color = (0, 165, 255) # オレンジ
+                                            else:
+                                                status = f"bad ({total_score})"
+                                                color = (0, 255, 0) # 緑
 
-                                            # 6. 結果の描画 (ROI座標系)
-                                            # status = FACE_COUNTERS[face_id]['status'] # (旧ロジック削除)
-                                            if status:
-                                                # ROI の左上に描画 (色も変更)
-                                                cv2.putText(person_roi, status, (10, 30), 
-                                                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                                            # デバッグ出力
+                                            print(f"  Face ID {face_id} Pitch:{pitch:.1f} Yaw:{yaw:.1f} EAR:{ear:.3f} -> Score:{total_score}")
 
-                                            # Pitch値のデバッグ描画
-                                            cv2.putText(person_roi, f"Pitch: {pitch:.1f} deg", (10, 60), 
-                                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+                                            # 画像左上にスコア・評価を描画
+                                            cv2.putText(person_roi, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                                            cv2.putText(person_roi, f"Pitch:{pitch:.1f} Yaw:{yaw:.1f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+                                            cv2.putText(person_roi, f"EAR:{ear:.3f}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
 
                                         except Exception as e_pose:
                                             print(f"Error in Head Pose estimation: {e_pose}")
-                                            status = "error" # ★ポーズ推定エラーの場合
-                                        # --- 顔の傾き推定 終了 ---
+                                            status = "error"
+                                            total_score = 0
 
                                         # --- ★追加: CSVファイルへの追記 ---
                                         # --save-faces が指定されている場合のみ、CSVに書き込む
@@ -340,8 +371,15 @@ def detect(save_img=False):
                                                 # 'a' (append)モードでファイルを開く
                                                 with open(csv_file_path, 'a', newline='', encoding='utf-8') as f_csv:
                                                     writer = csv.writer(f_csv)
-                                                    # [メッシュID, パス, 評価]
-                                                    row_data = [face_id, face_filename, status]
+                                                    # [メッシュID, パス, 総合スコア, Pitch, Yaw, EAR]
+                                                    row_data = [
+                                                        face_id,
+                                                        face_filename,
+                                                        total_score,
+                                                        int(round(25 * pitch_score)),
+                                                        int(round(25 * yaw_score)),
+                                                        int(round(25 * ear_score))
+                                                    ]
                                                     writer.writerow(row_data)
                                             except Exception as e:
                                                 print(f"Error writing to CSV file: {e}")
